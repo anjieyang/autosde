@@ -1405,8 +1405,7 @@ EOF
   fi
 
   rm -f "$audit_log" "$benchmark_log"
-  note "Research mode found nothing actionable. Sleeping for $SLEEP_INTERVAL seconds."
-  sleep "$SLEEP_INTERVAL"
+  note "Research mode found nothing actionable."
 }
 
 process_issue() {
@@ -1570,6 +1569,8 @@ run_iteration() {
 
   if [ -z "$issue_number" ]; then
     research_mode
+    note "Sleeping for $SLEEP_INTERVAL seconds."
+    sleep "$SLEEP_INTERVAL"
     return 0
   fi
 
