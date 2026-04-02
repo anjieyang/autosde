@@ -2,3 +2,5 @@ results.log
 logs/*.log
 .DS_Store
 autosde.egg-info/
+__pycache__/
+*.pyc
