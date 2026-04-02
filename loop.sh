@@ -54,11 +54,11 @@ sanitize_single_line() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") --github OWNER/REPO [options]
+Usage: $(basename "$0") [options]
 
 Options:
   --repo PATH          Target repository path. Defaults to current directory.
-  --github OWNER/REPO  GitHub repository to operate on. Required unless GITHUB_REPO is set.
+  --github OWNER/REPO  GitHub repository. Detected interactively if omitted.
   --verify COMMAND     Verification command. If omitted, AutoSDE auto-detects one.
   --sleep SECONDS      Poll interval when idle. Defaults to 900.
   --claude-bin PATH    Claude CLI binary. Defaults to claude.
@@ -553,6 +553,222 @@ preflight() {
   print_startup_summary
 }
 
+# --- Interactive onboarding ---
+
+step_ok() {
+  printf '  ✓ %s\n' "$*"
+}
+
+step_fail() {
+  printf '  ✗ %s\n' "$*"
+}
+
+confirm_default_yes() {
+  local prompt="$1"
+  local reply
+
+  printf '%s ' "$prompt" >/dev/tty
+  read -r reply </dev/tty || reply=""
+
+  case "$reply" in
+    [Nn]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+prompt_input() {
+  local prompt="$1"
+  local reply
+
+  printf '%s ' "$prompt" >/dev/tty
+  read -r reply </dev/tty || reply=""
+
+  printf '%s' "$reply"
+}
+
+detect_platform() {
+  case "$(uname -s)" in
+    Darwin) printf 'macos' ;;
+    Linux)
+      if [ -f /etc/os-release ] && grep -qi 'fedora\|rhel\|centos' /etc/os-release; then
+        printf 'fedora'
+      else
+        printf 'debian'
+      fi
+      ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+parse_github_remote() {
+  local url
+  url="$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null)" || return 1
+
+  printf '%s' "$url" | sed -E 's#^git@github\.com:##; s#^https://github\.com/##; s/\.git$//'
+}
+
+check_claude_auth() {
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    return 0
+  fi
+
+  if [ -d "${HOME}/.claude" ] && [ "$(ls -A "${HOME}/.claude" 2>/dev/null)" ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+interactive_onboarding() {
+  printf 'AutoSDE setup\n\n'
+
+  # 1. git
+  if ! command -v git >/dev/null 2>&1; then
+    step_fail "git not found"
+    printf '  Install git: https://git-scm.com/downloads\n'
+    exit 1
+  fi
+  step_ok "git"
+
+  # 2. gh CLI
+  GH_PATH="$(command_path "$GH_BIN")"
+  if [ -z "$GH_PATH" ]; then
+    step_fail "GitHub CLI not found"
+    case "$(detect_platform)" in
+      macos)  printf '  Install it: brew install gh\n' ;;
+      debian) printf '  Install it: sudo apt install gh\n' ;;
+      fedora) printf '  Install it: sudo dnf install gh\n' ;;
+      *)      printf '  Install it: %s\n' "$GH_SETUP_URL" ;;
+    esac
+    exit 1
+  fi
+  step_ok "GitHub CLI"
+
+  # 3. gh auth — let gh handle the interactive login flow
+  if ! "$GH_BIN" auth status >/dev/null 2>&1; then
+    step_fail "GitHub CLI not logged in"
+    printf '  Running: gh auth login\n\n'
+    if ! "$GH_BIN" auth login </dev/tty; then
+      printf '\n'
+      step_fail "GitHub authentication failed"
+      exit 1
+    fi
+    printf '\n'
+  fi
+  GH_LOGIN="$(agent_login)"
+  if [ -z "$GH_LOGIN" ]; then
+    step_fail "Could not determine GitHub user"
+    exit 1
+  fi
+  step_ok "GitHub authenticated as $GH_LOGIN"
+
+  # 4. claude CLI
+  CLAUDE_PATH="$(command_path "$CLAUDE_BIN")"
+  if [ -z "$CLAUDE_PATH" ]; then
+    step_fail "Claude CLI not found"
+    printf '  Install it: npm install -g @anthropic-ai/claude-code\n'
+    exit 1
+  fi
+  step_ok "Claude CLI"
+
+  # 5. claude auth — only hint, never run login for the user
+  if ! check_claude_auth; then
+    step_fail "Claude CLI not authenticated"
+    printf '  Run: claude login\n'
+    exit 1
+  fi
+  step_ok "Claude authenticated"
+
+  # 6. git repo + GitHub remote
+  resolve_repo_path
+
+  if ! git -C "$REPO_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    step_fail "Not a git repository: $REPO_PATH"
+    printf '  Run autosde from inside a git repository, or pass --repo PATH\n'
+    exit 1
+  fi
+  step_ok "git repository"
+
+  if [ -z "$GITHUB_REPO" ]; then
+    local detected_repo
+    detected_repo="$(parse_github_remote)" || detected_repo=""
+
+    if [ -n "$detected_repo" ]; then
+      if confirm_default_yes "  Detected remote: $detected_repo. Use this? [Y/n]"; then
+        GITHUB_REPO="$detected_repo"
+      else
+        GITHUB_REPO="$(prompt_input "  Enter GitHub repo (owner/repo):")"
+      fi
+    else
+      GITHUB_REPO="$(prompt_input "  Enter GitHub repo (owner/repo):")"
+    fi
+
+    if [ -z "$GITHUB_REPO" ]; then
+      step_fail "No GitHub repository specified"
+      exit 1
+    fi
+  fi
+  step_ok "repo: $GITHUB_REPO"
+
+  # 7. verify command
+  resolve_target_agent_file
+
+  if [ -n "$VERIFY_COMMAND" ]; then
+    RESOLVED_VERIFY_COMMAND="$VERIFY_COMMAND"
+    VERIFY_COMMAND_SOURCE="configured"
+  else
+    local detected_verify
+    detected_verify="$(detect_verify_command 2>/dev/null)" || detected_verify=""
+
+    if [ -n "$detected_verify" ]; then
+      if confirm_default_yes "  Detected: $detected_verify. Use this? [Y/n]"; then
+        RESOLVED_VERIFY_COMMAND="$detected_verify"
+        VERIFY_COMMAND_SOURCE="auto-detected"
+      else
+        RESOLVED_VERIFY_COMMAND="$(prompt_input "  Enter verify command:")"
+        VERIFY_COMMAND_SOURCE="configured"
+      fi
+    else
+      RESOLVED_VERIFY_COMMAND="$(prompt_input "  Enter verify command:")"
+      VERIFY_COMMAND_SOURCE="configured"
+    fi
+
+    if [ -z "$RESOLVED_VERIFY_COMMAND" ]; then
+      step_fail "No verify command specified"
+      exit 1
+    fi
+  fi
+  step_ok "verify: $RESOLVED_VERIFY_COMMAND"
+
+  # 8. AGENT.md
+  if [ ! -f "$TARGET_AGENT_FILE" ]; then
+    mkdir -p "$(dirname "$TARGET_AGENT_FILE")"
+    if [ -f "$SCRIPT_DIR/AGENT.md" ] && [ "$SCRIPT_DIR/AGENT.md" != "$TARGET_AGENT_FILE" ]; then
+      cp "$SCRIPT_DIR/AGENT.md" "$TARGET_AGENT_FILE"
+    else
+      write_default_agent_template >"$TARGET_AGENT_FILE"
+    fi
+    if ! confirm_default_yes "  Generated AGENT.md at $TARGET_AGENT_FILE. Continue? [Y/n]"; then
+      printf '  Edit AGENT.md and re-run autosde.\n'
+      exit 0
+    fi
+  fi
+  step_ok "AGENT.md"
+
+  # Non-interactive checks
+  preflight_timeout
+
+  if ! validate_positive_integer "$SLEEP_INTERVAL"; then
+    die "--sleep must be a positive integer"
+  fi
+
+  ensure_runtime_files
+
+  # 9. Startup summary
+  printf '\n'
+  print_startup_summary
+}
+
 release_issue() {
   local issue_number="$1"
   local login="$2"
@@ -1005,6 +1221,20 @@ create_proposed_issue() {
   local title="$1"
   local body="$2"
   local priority="$3"
+  local existing
+
+  existing="$("$GH_BIN" issue list \
+    --repo "$GITHUB_REPO" \
+    --state open \
+    --label agent-proposed \
+    --limit 100 \
+    --json title \
+    --jq '.[].title' 2>/dev/null)" || existing=""
+
+  if printf '%s\n' "$existing" | grep -qxF "$title"; then
+    note "Skipping proposed issue (duplicate): $title"
+    return 0
+  fi
 
   "$GH_BIN" issue create \
     --repo "$GITHUB_REPO" \
@@ -1312,7 +1542,12 @@ run_iteration() {
 main() {
   parse_args "$@"
   apply_config
-  preflight
+
+  if [ -t 0 ] && [ -z "$CLI_GITHUB_REPO" ]; then
+    interactive_onboarding
+  else
+    preflight
+  fi
 
   while true; do
     run_iteration || true
