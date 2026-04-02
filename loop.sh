@@ -2,20 +2,38 @@
 
 set -uo pipefail
 
-REPO_PATH="${REPO_PATH:-/absolute/path/to/target-repo}"
-GITHUB_REPO="${GITHUB_REPO:-owner/repo}"
-SLEEP_INTERVAL="${SLEEP_INTERVAL:-900}"
-
-CLAUDE_BIN="${CLAUDE_BIN:-claude}"
-GH_BIN="${GH_BIN:-gh}"
-TARGET_AGENT_FILE="${TARGET_AGENT_FILE:-$REPO_PATH/AGENT.md}"
-VERIFY_COMMAND="${VERIFY_COMMAND:-}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESULTS_LOG="${RESULTS_LOG:-$SCRIPT_DIR/results.log}"
-LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/logs}"
+AUTOSDE_HOME="${AUTOSDE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/autosde}"
 
-RUN_ID="${RUN_ID:-autosde-$(date -u '+%Y%m%dT%H%M%SZ')-$$}"
+CLI_REPO_PATH=""
+CLI_GITHUB_REPO=""
+CLI_VERIFY_COMMAND=""
+CLI_SLEEP_INTERVAL=""
+CLI_CLAUDE_BIN=""
+CLI_GH_BIN=""
+CLI_TIMEOUT_SECONDS=""
+
+REPO_PATH=""
+GITHUB_REPO=""
+VERIFY_COMMAND=""
+SLEEP_INTERVAL=""
+CLAUDE_BIN=""
+GH_BIN=""
+TIMEOUT_SECONDS=""
+TARGET_AGENT_FILE=""
+
+RESULTS_LOG="${RESULTS_LOG:-$AUTOSDE_HOME/results.log}"
+LOG_DIR="${LOG_DIR:-$AUTOSDE_HOME/logs}"
+
+RESOLVED_VERIFY_COMMAND=""
+VERIFY_COMMAND_SOURCE=""
+CLAUDE_PATH=""
+GH_PATH=""
+GH_LOGIN=""
+TIMEOUT_BIN=""
+
+CLAUDE_SETUP_URL="https://docs.anthropic.com/en/docs/claude-code/getting-started"
+GH_SETUP_URL="https://cli.github.com/"
 
 timestamp() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
@@ -25,8 +43,169 @@ note() {
   printf '[%s] %s\n' "$(timestamp)" "$*" >&2
 }
 
+die() {
+  note "$*"
+  exit 1
+}
+
 sanitize_single_line() {
   printf '%s' "$*" | tr '\t\r\n' '   ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") --github OWNER/REPO [options]
+
+Options:
+  --repo PATH          Target repository path. Defaults to current directory.
+  --github OWNER/REPO  GitHub repository to operate on. Required unless GITHUB_REPO is set.
+  --verify COMMAND     Verification command. If omitted, AutoSDE auto-detects one.
+  --sleep SECONDS      Poll interval when idle. Defaults to 900.
+  --claude-bin PATH    Claude CLI binary. Defaults to claude.
+  --gh-bin PATH        GitHub CLI binary. Defaults to gh.
+  --timeout SECONDS    Claude execution timeout. Defaults to 600.
+  -h, --help           Show this help message.
+
+Precedence:
+  command line > environment variables > defaults
+
+Environment variable fallbacks:
+  REPO_PATH, GITHUB_REPO, VERIFY_COMMAND, SLEEP_INTERVAL,
+  CLAUDE_BIN, GH_BIN, TIMEOUT_SECONDS, TARGET_AGENT_FILE,
+  AUTOSDE_HOME, RESULTS_LOG, LOG_DIR
+EOF
+}
+
+require_value() {
+  local flag="$1"
+  local value="${2:-}"
+
+  if [ -z "$value" ]; then
+    die "Missing value for $flag"
+  fi
+}
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo)
+        require_value "$1" "${2:-}"
+        CLI_REPO_PATH="$2"
+        shift 2
+        ;;
+      --repo=*)
+        CLI_REPO_PATH="${1#*=}"
+        shift
+        ;;
+      --github)
+        require_value "$1" "${2:-}"
+        CLI_GITHUB_REPO="$2"
+        shift 2
+        ;;
+      --github=*)
+        CLI_GITHUB_REPO="${1#*=}"
+        shift
+        ;;
+      --verify)
+        require_value "$1" "${2:-}"
+        CLI_VERIFY_COMMAND="$2"
+        shift 2
+        ;;
+      --verify=*)
+        CLI_VERIFY_COMMAND="${1#*=}"
+        shift
+        ;;
+      --sleep)
+        require_value "$1" "${2:-}"
+        CLI_SLEEP_INTERVAL="$2"
+        shift 2
+        ;;
+      --sleep=*)
+        CLI_SLEEP_INTERVAL="${1#*=}"
+        shift
+        ;;
+      --claude-bin)
+        require_value "$1" "${2:-}"
+        CLI_CLAUDE_BIN="$2"
+        shift 2
+        ;;
+      --claude-bin=*)
+        CLI_CLAUDE_BIN="${1#*=}"
+        shift
+        ;;
+      --gh-bin)
+        require_value "$1" "${2:-}"
+        CLI_GH_BIN="$2"
+        shift 2
+        ;;
+      --gh-bin=*)
+        CLI_GH_BIN="${1#*=}"
+        shift
+        ;;
+      --timeout)
+        require_value "$1" "${2:-}"
+        CLI_TIMEOUT_SECONDS="$2"
+        shift 2
+        ;;
+      --timeout=*)
+        CLI_TIMEOUT_SECONDS="${1#*=}"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "Unknown argument: $1"
+        ;;
+    esac
+  done
+}
+
+apply_config() {
+  REPO_PATH="${CLI_REPO_PATH:-${REPO_PATH:-$PWD}}"
+  GITHUB_REPO="${CLI_GITHUB_REPO:-${GITHUB_REPO:-}}"
+  VERIFY_COMMAND="${CLI_VERIFY_COMMAND:-${VERIFY_COMMAND:-}}"
+  SLEEP_INTERVAL="${CLI_SLEEP_INTERVAL:-${SLEEP_INTERVAL:-900}}"
+  CLAUDE_BIN="${CLI_CLAUDE_BIN:-${CLAUDE_BIN:-claude}}"
+  GH_BIN="${CLI_GH_BIN:-${GH_BIN:-gh}}"
+  TIMEOUT_SECONDS="${CLI_TIMEOUT_SECONDS:-${TIMEOUT_SECONDS:-600}}"
+}
+
+command_path() {
+  command -v "$1" 2>/dev/null || true
+}
+
+validate_positive_integer() {
+  case "$1" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+    0)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+resolve_repo_path() {
+  if [ ! -d "$REPO_PATH" ]; then
+    die "--repo path does not exist: $REPO_PATH"
+  fi
+
+  REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+}
+
+resolve_target_agent_file() {
+  local configured_target="${TARGET_AGENT_FILE:-AGENT.md}"
+
+  if [ "${configured_target#/}" != "$configured_target" ]; then
+    TARGET_AGENT_FILE="$configured_target"
+  else
+    TARGET_AGENT_FILE="$REPO_PATH/$configured_target"
+  fi
 }
 
 ensure_runtime_files() {
@@ -42,27 +221,15 @@ log_result() {
   local branch="${2:--}"
   local status="${3:-crashed}"
   local description
+
   description="$(sanitize_single_line "${4:-}")"
+
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$(timestamp)" \
     "$issue" \
     "$branch" \
     "$status" \
     "$description" >>"$RESULTS_LOG"
-}
-
-require_command() {
-  local missing=0
-  local cmd
-
-  for cmd in "$@"; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-      note "Missing required command: $cmd"
-      missing=1
-    fi
-  done
-
-  return "$missing"
 }
 
 search_tool() {
@@ -98,7 +265,7 @@ default_branch() {
 }
 
 agent_login() {
-  "$GH_BIN" api user --jq '.login'
+  "$GH_BIN" api user --jq '.login' 2>/dev/null || true
 }
 
 slugify() {
@@ -108,138 +275,135 @@ slugify() {
     cut -c1-40
 }
 
-release_issue() {
-  local issue_number="$1"
-  local login="$2"
+write_default_agent_template() {
+  cat <<'EOF'
+# AutoSDE Agent Instructions
 
-  "$GH_BIN" issue edit "$issue_number" --repo "$GITHUB_REPO" --remove-assignee "$login" >/dev/null 2>&1 || true
+## Identity
+You are an autonomous software development agent working on this repository.
+You pick up tasks from GitHub Issues, implement solutions, and submit PRs.
+You never stop. You never ask if you should continue.
+
+## Scope
+- You CAN modify: replace this with the real allowed directories for the target repo
+- You CANNOT modify: .github/workflows/, AGENT.md, and any config that affects CI itself
+- You CANNOT: delete tests, disable linting, bypass CI checks, auto-merge anything
+
+## Task Execution
+1. Read the issue carefully. Understand what's being asked.
+2. If the issue is ambiguous, comment asking for clarification and STOP.
+3. If clear, plan your approach briefly and write that plan as an issue comment.
+4. Implement the change on your branch.
+5. Write or update tests for your change.
+6. Run the test suite locally before finishing.
+7. If tests pass, leave the branch ready for the harness to push and create a PR.
+8. If tests fail, debug. You get ONE retry. If still failing, stop and explain why in the issue.
+
+## PR Format
+- Title: `[AutoSDE] <concise description>`
+- Body: What was changed, why, and link to the issue (`Closes #N`)
+- Keep PRs small and focused. One issue = one PR.
+
+## Quality Standards
+- All existing tests must still pass.
+- New functionality must have test coverage.
+- No commented-out code, no TODOs in new code.
+- Follow the existing code style and conventions of this repo.
+
+## Research Mode
+When no tasks are available:
+- Scan for TODOs/FIXMEs and assess if they're worth addressing.
+- Look for obvious performance improvements or dead code.
+- Check if dependencies have known security vulnerabilities.
+- If you find something worth doing, create an issue labeled `agent` and `agent-proposed`.
+- Do NOT make changes without creating an issue first.
+
+## Boundaries (NEVER cross these)
+- Never push directly to main.
+- Never modify CI/CD configuration.
+- Never delete or weaken tests.
+- Never make changes outside your allowed scope directories.
+- When in doubt, create an issue and ask instead of guessing.
+
+## Logging
+After each task, report what you tried, what the outcome was, and what you learned.
+This goes both as an issue comment and into `results.log`.
+
+## Adaptation Note
+This file is a template. Before using AutoSDE on a real repository, replace the scope line with the exact directories and constraints for that codebase.
+EOF
 }
 
-checkout_clean_default_branch() {
-  local branch="$1"
+generate_default_agent_file() {
+  mkdir -p "$(dirname "$TARGET_AGENT_FILE")"
 
-  git -C "$REPO_PATH" fetch origin "$branch" --prune >/dev/null 2>&1 || return 1
-  git -C "$REPO_PATH" checkout "$branch" >/dev/null 2>&1 || return 1
-  git -C "$REPO_PATH" reset --hard "origin/$branch" >/dev/null 2>&1 || return 1
-  git -C "$REPO_PATH" clean -fd >/dev/null 2>&1 || return 1
+  if [ -f "$SCRIPT_DIR/AGENT.md" ] && [ "$SCRIPT_DIR/AGENT.md" != "$TARGET_AGENT_FILE" ]; then
+    cp "$SCRIPT_DIR/AGENT.md" "$TARGET_AGENT_FILE"
+  else
+    write_default_agent_template >"$TARGET_AGENT_FILE"
+  fi
+
+  note "Generated default AGENT.md at $TARGET_AGENT_FILE, review and customize the scope section"
 }
 
-create_issue_branch() {
-  local branch="$1"
-  local base="$2"
+preflight_claude() {
+  CLAUDE_PATH="$(command_path "$CLAUDE_BIN")"
 
-  git -C "$REPO_PATH" checkout -B "$branch" "origin/$base" >/dev/null 2>&1
+  if [ -z "$CLAUDE_PATH" ]; then
+    die "Claude CLI not found at '$CLAUDE_BIN'. Install it from $CLAUDE_SETUP_URL"
+  fi
 }
 
-select_issue_number() {
-  "$GH_BIN" issue list \
-    --repo "$GITHUB_REPO" \
-    --state open \
-    --label agent \
-    --limit 100 \
-    --json number,labels,assignees \
-    --jq '
-      map(select((.assignees | length) == 0))
-      | sort_by(
-          (
-            if any(.labels[].name; . == "bug") then 0
-            elif any(.labels[].name; . == "feature") then 1
-            elif any(.labels[].name; . == "refactor") then 2
-            elif any(.labels[].name; . == "chore") then 3
-            else 4
-            end
-          ),
-          .number
-        )
-      | .[0].number // empty
-    ' 2>/dev/null
+preflight_gh() {
+  GH_PATH="$(command_path "$GH_BIN")"
+
+  if [ -z "$GH_PATH" ]; then
+    die "GitHub CLI not found at '$GH_BIN'. Install it from $GH_SETUP_URL"
+  fi
+
+  if ! "$GH_BIN" auth status >/dev/null 2>&1; then
+    die "GitHub CLI is not logged in. Run 'gh auth login' and try again."
+  fi
+
+  GH_LOGIN="$(agent_login)"
+
+  if [ -z "$GH_LOGIN" ]; then
+    die "GitHub CLI is installed, but AutoSDE could not determine the logged-in user."
+  fi
 }
 
-issue_field() {
-  local issue_number="$1"
-  local field="$2"
-
-  "$GH_BIN" issue view "$issue_number" --repo "$GITHUB_REPO" --json "$field" --jq ".$field"
+preflight_repo() {
+  if ! git -C "$REPO_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    die "--repo must point to a git repository: $REPO_PATH"
+  fi
 }
 
-claim_issue() {
-  local issue_number="$1"
-  local login="$2"
-
-  "$GH_BIN" issue edit "$issue_number" --repo "$GITHUB_REPO" --add-assignee "$login" >/dev/null 2>&1 || return 1
-  "$GH_BIN" issue comment "$issue_number" --repo "$GITHUB_REPO" --body "I'm picking this up." >/dev/null 2>&1 || return 1
+preflight_github_repo() {
+  if [ -z "$GITHUB_REPO" ]; then
+    die "--github OWNER/REPO is required"
+  fi
 }
 
-build_prompt_file() {
-  local prompt_file="$1"
-  local issue_number="$2"
-  local issue_title="$3"
-  local issue_url="$4"
-  local issue_body="$5"
-  local branch="$6"
-  local retry_feedback="${7:-}"
+resolve_timeout_bin() {
+  if command -v timeout >/dev/null 2>&1; then
+    printf 'timeout'
+    return 0
+  fi
 
-  {
-    printf 'You are working inside the repository at %s.\n' "$REPO_PATH"
-    printf 'Stay on branch %s.\n\n' "$branch"
-    printf 'Follow the repository AGENT.md instructions below exactly.\n\n'
-    printf '----- BEGIN AGENT.md -----\n'
-    cat "$TARGET_AGENT_FILE"
-    printf '\n----- END AGENT.md -----\n\n'
-    printf 'Current issue:\n'
-    printf '#%s: %s\n' "$issue_number" "$issue_title"
-    printf '%s\n\n' "$issue_url"
-    printf 'Issue body:\n%s\n\n' "$issue_body"
-    printf 'Harness expectations:\n'
-    printf -- '- Work only in this repository.\n'
-    printf -- '- Use GitHub CLI if you need to comment on the issue or inspect metadata.\n'
-    printf -- '- Leave the branch ready for verification by the harness when you finish.\n'
+  if command -v gtimeout >/dev/null 2>&1; then
+    printf 'gtimeout'
+    return 0
+  fi
 
-    if [ -n "$retry_feedback" ]; then
-      printf '\nRetry context:\n%s\n' "$retry_feedback"
-    fi
-  } >"$prompt_file"
+  return 1
 }
 
-run_claude_prompt() {
-  local prompt_file="$1"
-  local task_log="$2"
-  local prompt_text
+preflight_timeout() {
+  if ! validate_positive_integer "$TIMEOUT_SECONDS"; then
+    die "--timeout must be a positive integer"
+  fi
 
-  prompt_text="$(cat "$prompt_file")"
-
-  {
-    printf '=== %s Claude invocation started ===\n' "$(timestamp)"
-
-    if "$CLAUDE_BIN" -p --dangerously-skip-permissions "$prompt_text"; then
-      printf '\n=== %s Claude invocation finished successfully ===\n' "$(timestamp)"
-      return 0
-    fi
-
-    printf '\n=== %s falling back to --print ===\n' "$(timestamp)"
-
-    if "$CLAUDE_BIN" --print --dangerously-skip-permissions "$prompt_text"; then
-      printf '\n=== %s Claude invocation finished successfully ===\n' "$(timestamp)"
-      return 0
-    fi
-
-    printf '\n=== %s attempting stdin fallback ===\n' "$(timestamp)"
-
-    if cat "$prompt_file" | "$CLAUDE_BIN" -p --dangerously-skip-permissions; then
-      printf '\n=== %s Claude invocation finished successfully ===\n' "$(timestamp)"
-      return 0
-    fi
-
-    printf '\n=== %s attempting stdin + --print fallback ===\n' "$(timestamp)"
-
-    if cat "$prompt_file" | "$CLAUDE_BIN" --print --dangerously-skip-permissions; then
-      printf '\n=== %s Claude invocation finished successfully ===\n' "$(timestamp)"
-      return 0
-    fi
-
-    printf '\n=== %s Claude invocation failed ===\n' "$(timestamp)"
-    return 1
-  } >>"$task_log" 2>&1
+  TIMEOUT_BIN="$(resolve_timeout_bin)" || die "No timeout command found. Install GNU coreutils to get 'gtimeout' on macOS."
 }
 
 detect_js_runner() {
@@ -332,6 +496,241 @@ detect_verify_command() {
   fi
 
   return 1
+}
+
+preflight_verify_command() {
+  if validate_positive_integer "$SLEEP_INTERVAL"; then
+    :
+  else
+    die "--sleep must be a positive integer"
+  fi
+
+  if [ -n "$VERIFY_COMMAND" ]; then
+    RESOLVED_VERIFY_COMMAND="$VERIFY_COMMAND"
+    VERIFY_COMMAND_SOURCE="configured"
+    return 0
+  fi
+
+  RESOLVED_VERIFY_COMMAND="$(detect_verify_command)" || die "Could not auto-detect a verification command. Pass --verify \"COMMAND\"."
+  VERIFY_COMMAND_SOURCE="auto-detected"
+}
+
+preflight_agent_file() {
+  if [ ! -f "$TARGET_AGENT_FILE" ]; then
+    generate_default_agent_file
+  fi
+}
+
+print_startup_summary() {
+  local verify_line
+
+  verify_line="$RESOLVED_VERIFY_COMMAND"
+  if [ "$VERIFY_COMMAND_SOURCE" = "auto-detected" ]; then
+    verify_line="$verify_line (auto-detected)"
+  fi
+
+  note "AutoSDE starting"
+  note "repo: $REPO_PATH"
+  note "github: $GITHUB_REPO"
+  note "verify: $verify_line"
+  note "claude: $CLAUDE_PATH ✓"
+  note "gh: $GH_PATH ✓ (logged in as $GH_LOGIN)"
+  note "AGENT.md: found"
+  note "waiting for issues labeled \"agent\"..."
+}
+
+preflight() {
+  preflight_github_repo
+  resolve_repo_path
+  resolve_target_agent_file
+  preflight_claude
+  preflight_gh
+  preflight_repo
+  preflight_timeout
+  preflight_verify_command
+  preflight_agent_file
+  ensure_runtime_files
+  print_startup_summary
+}
+
+release_issue() {
+  local issue_number="$1"
+  local login="$2"
+
+  "$GH_BIN" issue edit "$issue_number" --repo "$GITHUB_REPO" --remove-assignee "$login" >/dev/null 2>&1 || true
+}
+
+target_agent_git_clean_exclusion() {
+  case "$TARGET_AGENT_FILE" in
+    "$REPO_PATH"/*)
+      printf '%s' "${TARGET_AGENT_FILE#$REPO_PATH/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+clean_repo_worktree() {
+  local agent_exclusion
+
+  agent_exclusion="$(target_agent_git_clean_exclusion 2>/dev/null || true)"
+
+  if [ -n "$agent_exclusion" ]; then
+    git -C "$REPO_PATH" clean -fd -e "$agent_exclusion" >/dev/null 2>&1
+  else
+    git -C "$REPO_PATH" clean -fd >/dev/null 2>&1
+  fi
+}
+
+checkout_clean_default_branch() {
+  local branch="$1"
+
+  git -C "$REPO_PATH" fetch origin "$branch" --prune >/dev/null 2>&1 || return 1
+  git -C "$REPO_PATH" checkout "$branch" >/dev/null 2>&1 || \
+    git -C "$REPO_PATH" checkout -B "$branch" "origin/$branch" >/dev/null 2>&1 || return 1
+  git -C "$REPO_PATH" reset --hard "origin/$branch" >/dev/null 2>&1 || return 1
+  clean_repo_worktree || return 1
+}
+
+create_issue_branch() {
+  local branch="$1"
+  local base="$2"
+
+  git -C "$REPO_PATH" checkout -B "$branch" "origin/$base" >/dev/null 2>&1
+}
+
+select_issue_number() {
+  "$GH_BIN" issue list \
+    --repo "$GITHUB_REPO" \
+    --state open \
+    --label agent \
+    --limit 100 \
+    --json number,labels,assignees \
+    --jq '
+      map(select((.assignees | length) == 0))
+      | sort_by(
+          (
+            if any(.labels[].name; . == "bug") then 0
+            elif any(.labels[].name; . == "feature") then 1
+            elif any(.labels[].name; . == "refactor") then 2
+            elif any(.labels[].name; . == "chore") then 3
+            else 4
+            end
+          ),
+          .number
+        )
+      | .[0].number // empty
+    ' 2>/dev/null
+}
+
+issue_field() {
+  local issue_number="$1"
+  local field="$2"
+
+  "$GH_BIN" issue view "$issue_number" --repo "$GITHUB_REPO" --json "$field" --jq ".$field"
+}
+
+claim_issue() {
+  local issue_number="$1"
+  local login="$2"
+
+  "$GH_BIN" issue edit "$issue_number" --repo "$GITHUB_REPO" --add-assignee "$login" >/dev/null 2>&1 || return 1
+  "$GH_BIN" issue comment "$issue_number" --repo "$GITHUB_REPO" --body "I'm picking this up." >/dev/null 2>&1 || return 1
+}
+
+build_prompt_file() {
+  local prompt_file="$1"
+  local issue_number="$2"
+  local issue_title="$3"
+  local issue_url="$4"
+  local issue_body="$5"
+  local branch="$6"
+  local retry_feedback="${7:-}"
+
+  {
+    printf 'You are working inside the repository at %s.\n' "$REPO_PATH"
+    printf 'Stay on branch %s.\n\n' "$branch"
+    printf 'Follow the repository AGENT.md instructions below exactly.\n\n'
+    printf '----- BEGIN AGENT.md -----\n'
+    cat "$TARGET_AGENT_FILE"
+    printf '\n----- END AGENT.md -----\n\n'
+    printf 'Current issue:\n'
+    printf '#%s: %s\n' "$issue_number" "$issue_title"
+    printf '%s\n\n' "$issue_url"
+    printf 'Issue body:\n%s\n\n' "$issue_body"
+    printf 'Harness expectations:\n'
+    printf -- '- Work only in this repository.\n'
+    printf -- '- Use GitHub CLI if you need to comment on the issue or inspect metadata.\n'
+    printf -- '- Leave the branch ready for verification by the harness when you finish.\n'
+
+    if [ -n "$retry_feedback" ]; then
+      printf '\nRetry context:\n%s\n' "$retry_feedback"
+    fi
+  } >"$prompt_file"
+}
+
+create_claude_runner() {
+  local runner_file="$1"
+
+  cat <<'EOF' >"$runner_file"
+#!/usr/bin/env bash
+
+set -uo pipefail
+
+prompt_file="$1"
+claude_bin="$2"
+prompt_text="$(cat "$prompt_file")"
+
+if "$claude_bin" -p --dangerously-skip-permissions "$prompt_text"; then
+  exit 0
+fi
+
+if "$claude_bin" --print --dangerously-skip-permissions "$prompt_text"; then
+  exit 0
+fi
+
+if cat "$prompt_file" | "$claude_bin" -p --dangerously-skip-permissions; then
+  exit 0
+fi
+
+if cat "$prompt_file" | "$claude_bin" --print --dangerously-skip-permissions; then
+  exit 0
+fi
+
+exit 1
+EOF
+
+  chmod +x "$runner_file"
+}
+
+run_claude_prompt() {
+  local prompt_file="$1"
+  local task_log="$2"
+  local runner_file
+  local exit_code
+
+  runner_file="$(mktemp)"
+  create_claude_runner "$runner_file"
+
+  {
+    printf '=== %s Claude invocation started ===\n' "$(timestamp)"
+    printf 'timeout: %s seconds via %s\n' "$TIMEOUT_SECONDS" "$TIMEOUT_BIN"
+  } >>"$task_log" 2>&1
+
+  "$TIMEOUT_BIN" "$TIMEOUT_SECONDS" "$runner_file" "$prompt_file" "$CLAUDE_BIN" >>"$task_log" 2>&1
+  exit_code=$?
+
+  if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
+    printf '\n=== %s Claude invocation timed out after %s seconds ===\n' "$(timestamp)" "$TIMEOUT_SECONDS" >>"$task_log" 2>&1
+  elif [ "$exit_code" -eq 0 ]; then
+    printf '\n=== %s Claude invocation finished successfully ===\n' "$(timestamp)" >>"$task_log" 2>&1
+  else
+    printf '\n=== %s Claude invocation failed with exit code %s ===\n' "$(timestamp)" "$exit_code" >>"$task_log" 2>&1
+  fi
+
+  rm -f "$runner_file"
+  return "$exit_code"
 }
 
 run_verification() {
@@ -430,9 +829,10 @@ cleanup_local_branch() {
   local branch="$1"
   local base="$2"
 
-  git -C "$REPO_PATH" checkout "$base" >/dev/null 2>&1 || return 1
+  git -C "$REPO_PATH" checkout "$base" >/dev/null 2>&1 || \
+    git -C "$REPO_PATH" checkout -B "$base" "origin/$base" >/dev/null 2>&1 || return 1
   git -C "$REPO_PATH" reset --hard "origin/$base" >/dev/null 2>&1 || return 1
-  git -C "$REPO_PATH" clean -fd >/dev/null 2>&1 || return 1
+  clean_repo_worktree || return 1
   git -C "$REPO_PATH" branch -D "$branch" >/dev/null 2>&1 || true
 }
 
@@ -440,9 +840,10 @@ discard_branch() {
   local branch="$1"
   local base="$2"
 
-  git -C "$REPO_PATH" checkout "$base" >/dev/null 2>&1 || true
+  git -C "$REPO_PATH" checkout "$base" >/dev/null 2>&1 || \
+    git -C "$REPO_PATH" checkout -B "$base" "origin/$base" >/dev/null 2>&1 || true
   git -C "$REPO_PATH" reset --hard "origin/$base" >/dev/null 2>&1 || true
-  git -C "$REPO_PATH" clean -fd >/dev/null 2>&1 || true
+  clean_repo_worktree || true
   git -C "$REPO_PATH" branch -D "$branch" >/dev/null 2>&1 || true
   git -C "$REPO_PATH" push origin --delete "$branch" >/dev/null 2>&1 || true
 }
@@ -549,9 +950,9 @@ detect_benchmark_command() {
 
 run_audit_check() {
   local output_file="$1"
+  local runner
 
   if [ -f "$REPO_PATH/package.json" ]; then
-    local runner
     runner="$(detect_js_runner)"
 
     case "$runner" in
@@ -625,7 +1026,6 @@ research_mode() {
   note "No unclaimed agent issues found. Entering research mode."
 
   tool="$(search_tool)"
-
   audit_log="$(mktemp)"
   benchmark_log="$(mktemp)"
 
@@ -752,7 +1152,6 @@ process_issue() {
   local issue_url
   local issue_slug
   local branch
-  local verify_cmd
   local task_log
   local prompt_file
   local retry_prompt_file
@@ -786,6 +1185,10 @@ process_issue() {
     return 1
   fi
 
+  if [ ! -f "$TARGET_AGENT_FILE" ]; then
+    generate_default_agent_file
+  fi
+
   if ! create_issue_branch "$branch" "$base_branch"; then
     comment_crash "$issue_number" "$branch" "Unable to create the working branch."
     release_issue "$issue_number" "$login"
@@ -793,31 +1196,15 @@ process_issue() {
     return 1
   fi
 
-  if ! verify_cmd="$(detect_verify_command)"; then
-    comment_discarded "$issue_number" "$branch" "No verification command was configured or auto-detected."
-    release_issue "$issue_number" "$login"
-    discard_branch "$branch" "$base_branch"
-    log_result "$issue_number" "$branch" "discarded" "No verification command configured or detected"
-    return 0
-  fi
-
-  if [ ! -f "$TARGET_AGENT_FILE" ]; then
-    comment_discarded "$issue_number" "$branch" "The target repository is missing AGENT.md, so the harness cannot run the agent safely."
-    release_issue "$issue_number" "$login"
-    discard_branch "$branch" "$base_branch"
-    log_result "$issue_number" "$branch" "discarded" "Target repository is missing AGENT.md"
-    return 0
-  fi
-
   prompt_file="$(mktemp)"
   build_prompt_file "$prompt_file" "$issue_number" "$issue_title" "$issue_url" "$issue_body" "$branch"
 
   if ! run_claude_prompt "$prompt_file" "$task_log"; then
-    comment_crash "$issue_number" "$branch" "Claude Code failed before a verified change was produced."
+    comment_crash "$issue_number" "$branch" "Claude Code failed or timed out before a verified change was produced."
     release_issue "$issue_number" "$login"
     rm -f "$prompt_file"
     discard_branch "$branch" "$base_branch"
-    log_result "$issue_number" "$branch" "crashed" "Claude invocation failed"
+    log_result "$issue_number" "$branch" "crashed" "Claude invocation failed or timed out"
     return 1
   fi
 
@@ -831,12 +1218,12 @@ process_issue() {
     return 0
   fi
 
-  if ! run_verification "$verify_cmd" "$task_log"; then
+  if ! run_verification "$RESOLVED_VERIFY_COMMAND" "$task_log"; then
     retry_context="$(cat <<EOF
 The first verification attempt failed.
 
 Verification command:
-$verify_cmd
+$RESOLVED_VERIFY_COMMAND
 
 Failure excerpt:
 $(failure_excerpt "$task_log")
@@ -858,7 +1245,7 @@ EOF
 
     rm -f "$retry_prompt_file"
 
-    if ! run_verification "$verify_cmd" "$task_log"; then
+    if ! run_verification "$RESOLVED_VERIFY_COMMAND" "$task_log"; then
       excerpt="$(failure_excerpt "$task_log")"
       comment_failure "$issue_number" "$branch" "$excerpt"
       release_issue "$issue_number" "$login"
@@ -902,19 +1289,7 @@ run_iteration() {
   local reviewer
   local issue_number
 
-  if ! require_command "$GH_BIN" git "$CLAUDE_BIN"; then
-    log_result "-" "-" "crashed" "Missing required command(s)"
-    sleep "$SLEEP_INTERVAL"
-    return 1
-  fi
-
-  if [ ! -d "$REPO_PATH/.git" ]; then
-    log_result "-" "-" "crashed" "REPO_PATH is not a git repository: $REPO_PATH"
-    sleep "$SLEEP_INTERVAL"
-    return 1
-  fi
-
-  login="$(agent_login 2>/dev/null || true)"
+  login="$GH_LOGIN"
   base_branch="$(default_branch)"
   reviewer="${GITHUB_REPO%%/*}"
 
@@ -935,8 +1310,9 @@ run_iteration() {
 }
 
 main() {
-  ensure_runtime_files
-  note "AutoSDE loop starting for $GITHUB_REPO using $REPO_PATH"
+  parse_args "$@"
+  apply_config
+  preflight
 
   while true; do
     run_iteration || true

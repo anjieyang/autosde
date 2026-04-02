@@ -51,4 +51,4 @@ After each task, report what you tried, what the outcome was, and what you learn
 This goes both as an issue comment and into `results.log`.
 
 ## Adaptation Note
-This file is a template. Before using AutoSDE on a real repository, copy this file into that repository and replace the scope line with the exact directories and constraints for that codebase.
+This file is a template. AutoSDE can generate it automatically on first run if the target repo does not already have one, but you should still replace the scope line with the exact directories and constraints for that codebase.
