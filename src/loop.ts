@@ -192,35 +192,28 @@ function runClaude(cfg: Config, prompt: string, logPath: string): boolean {
   const fd = fs.openSync(logPath, "a");
   fs.writeSync(fd, `=== ${timestamp()} Claude invocation started ===\ntimeout: ${cfg.timeoutSeconds}s\n`);
 
-  const methods = [
-    { args: [cfg.claudeBin, "-p", "--dangerously-skip-permissions", prompt] },
-    { args: [cfg.claudeBin, "--print", "--dangerously-skip-permissions", prompt] },
-    { args: [cfg.claudeBin, "-p", "--dangerously-skip-permissions"], input: prompt },
-    { args: [cfg.claudeBin, "--print", "--dangerously-skip-permissions"], input: prompt },
-  ];
+  const r = spawnSync(cfg.claudeBin, [
+    "--bare", "-p", "--allowedTools", "Read,Edit,Write,Bash,Glob,Grep",
+  ], {
+    cwd: cfg.repoPath,
+    timeout: cfg.timeoutSeconds * 1000,
+    input: prompt,
+    stdio: ["pipe", fd, fd],
+  });
 
-  for (const m of methods) {
-    const r = spawnSync(m.args[0], m.args.slice(1), {
-      cwd: cfg.repoPath,
-      timeout: cfg.timeoutSeconds * 1000,
-      input: m.input,
-      stdio: [m.input ? "pipe" : "inherit", fd, fd],
-      encoding: "utf8",
-    });
-
-    if (r.error && (r.error as any).code === "ETIMEDOUT") {
-      fs.writeSync(fd, `\n=== ${timestamp()} Claude timed out after ${cfg.timeoutSeconds}s ===\n`);
-      fs.closeSync(fd);
-      return false;
-    }
-    if (r.status === 0) {
-      fs.writeSync(fd, `\n=== ${timestamp()} Claude finished successfully ===\n`);
-      fs.closeSync(fd);
-      return true;
-    }
+  if (r.error && (r.error as any).code === "ETIMEDOUT") {
+    fs.writeSync(fd, `\n=== ${timestamp()} Claude timed out after ${cfg.timeoutSeconds}s ===\n`);
+    fs.closeSync(fd);
+    return false;
+  }
+  if (r.status === 0) {
+    fs.writeSync(fd, `\n=== ${timestamp()} Claude finished successfully ===\n`);
+    fs.closeSync(fd);
+    return true;
   }
 
-  fs.writeSync(fd, `\n=== ${timestamp()} All Claude invocations failed ===\n`);
+  fs.writeSync(fd, `\n=== ${timestamp()} Claude failed with exit code ${r.status} ===\n`);
+  if (r.stderr) fs.writeSync(fd, `stderr: ${r.stderr}\n`);
   fs.closeSync(fd);
   return false;
 }
