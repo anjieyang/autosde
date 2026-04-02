@@ -641,12 +641,17 @@ interactive_onboarding() {
   if [ -z "$GH_PATH" ]; then
     step_fail "GitHub CLI not found"
     case "$(detect_platform)" in
-      macos)  printf '  Install it: brew install gh\n' ;;
+      macos)
+        if command -v brew >/dev/null 2>&1 && confirm_default_yes "  Install with Homebrew? [Y/n]"; then
+          brew install gh || { step_fail "brew install gh failed"; exit 1; }
+          GH_PATH="$(command_path "$GH_BIN")"
+        fi
+        ;;
       debian) printf '  Install it: sudo apt install gh\n' ;;
       fedora) printf '  Install it: sudo dnf install gh\n' ;;
       *)      printf '  Install it: %s\n' "$GH_SETUP_URL" ;;
     esac
-    exit 1
+    if [ -z "$GH_PATH" ]; then exit 1; fi
   fi
   step_ok "GitHub CLI"
 
@@ -672,8 +677,14 @@ interactive_onboarding() {
   CLAUDE_PATH="$(command_path "$CLAUDE_BIN")"
   if [ -z "$CLAUDE_PATH" ]; then
     step_fail "Claude CLI not found"
-    printf '  Install it: npm install -g @anthropic-ai/claude-code\n'
-    exit 1
+    if command -v npm >/dev/null 2>&1 && confirm_default_yes "  Install with npm? [Y/n]"; then
+      npm install -g @anthropic-ai/claude-code || { step_fail "npm install failed"; exit 1; }
+      CLAUDE_PATH="$(command_path "$CLAUDE_BIN")"
+    fi
+    if [ -z "$CLAUDE_PATH" ]; then
+      printf '  Install it: npm install -g @anthropic-ai/claude-code\n'
+      exit 1
+    fi
   fi
   step_ok "Claude CLI"
 
@@ -771,10 +782,15 @@ interactive_onboarding() {
   if [ -z "$TIMEOUT_BIN" ]; then
     step_fail "No timeout command found"
     case "$(detect_platform)" in
-      macos) printf '  Install it: brew install coreutils\n' ;;
-      *)     printf '  Install GNU coreutils for the timeout command\n' ;;
+      macos)
+        if command -v brew >/dev/null 2>&1 && confirm_default_yes "  Install coreutils with Homebrew? [Y/n]"; then
+          brew install coreutils || { step_fail "brew install coreutils failed"; exit 1; }
+          TIMEOUT_BIN="$(resolve_timeout_bin 2>/dev/null)" || TIMEOUT_BIN=""
+        fi
+        ;;
+      *) printf '  Install GNU coreutils for the timeout command\n' ;;
     esac
-    exit 1
+    if [ -z "$TIMEOUT_BIN" ]; then exit 1; fi
   fi
   step_ok "timeout: $TIMEOUT_BIN"
 
