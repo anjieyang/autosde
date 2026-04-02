@@ -7,7 +7,7 @@ AutoSDE is an always-on shell loop inspired by Karpathy's `autoresearch`: one pr
 ## Quick Start
 
 ```bash
-npm install -g autosde
+npm install -g @anjieyang/autosde
 cd ~/my-project
 autosde
 ```

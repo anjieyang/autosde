@@ -1,5 +1,5 @@
 {
-  "name": "autosde",
+  "name": "@anjieyang/autosde",
   "version": "0.1.0",
   "description": "Label an issue, go to sleep, wake up to a PR.",
   "bin": {
