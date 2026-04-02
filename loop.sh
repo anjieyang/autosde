@@ -913,9 +913,9 @@ build_prompt_file() {
     printf '%s\n\n' "$issue_url"
     printf 'Issue body:\n%s\n\n' "$issue_body"
     printf 'Harness expectations:\n'
-    printf -- '- Work only in this repository.\n'
-    printf -- '- Use GitHub CLI if you need to comment on the issue or inspect metadata.\n'
-    printf -- '- Leave the branch ready for verification by the harness when you finish.\n'
+    printf '%s\n' '- Work only in this repository.'
+    printf '%s\n' '- Use GitHub CLI if you need to comment on the issue or inspect metadata.'
+    printf '%s\n' '- Leave the branch ready for verification by the harness when you finish.'
 
     if [ -n "$retry_feedback" ]; then
       printf '\nRetry context:\n%s\n' "$retry_feedback"
