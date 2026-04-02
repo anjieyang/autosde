@@ -1,6 +1,6 @@
 {
   "name": "@anjieyang/autosde",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Label an issue, go to sleep, wake up to a PR.",
   "bin": {
     "autosde": "./loop.sh"

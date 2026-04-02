@@ -761,11 +761,26 @@ interactive_onboarding() {
   fi
   step_ok "AGENT.md"
 
-  # Non-interactive checks
-  preflight_timeout
+  # 9. timeout command
+  if ! validate_positive_integer "$TIMEOUT_SECONDS"; then
+    step_fail "Invalid timeout value: $TIMEOUT_SECONDS"
+    exit 1
+  fi
+
+  TIMEOUT_BIN="$(resolve_timeout_bin 2>/dev/null)" || TIMEOUT_BIN=""
+  if [ -z "$TIMEOUT_BIN" ]; then
+    step_fail "No timeout command found"
+    case "$(detect_platform)" in
+      macos) printf '  Install it: brew install coreutils\n' ;;
+      *)     printf '  Install GNU coreutils for the timeout command\n' ;;
+    esac
+    exit 1
+  fi
+  step_ok "timeout: $TIMEOUT_BIN"
 
   if ! validate_positive_integer "$SLEEP_INTERVAL"; then
-    die "--sleep must be a positive integer"
+    step_fail "Invalid sleep interval: $SLEEP_INTERVAL"
+    exit 1
   fi
 
   ensure_runtime_files
