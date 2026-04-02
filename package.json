@@ -1,0 +1,30 @@
+{
+  "name": "autosde",
+  "version": "0.1.0",
+  "description": "Label an issue, go to sleep, wake up to a PR.",
+  "bin": {
+    "autosde": "./loop.sh"
+  },
+  "files": [
+    "loop.sh",
+    "AGENT.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anjieyang/autosde.git"
+  },
+  "keywords": [
+    "ai",
+    "automation",
+    "claude",
+    "github",
+    "agent",
+    "codegen"
+  ],
+  "author": "Anjie Yang",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/anjieyang/autosde/issues"
+  },
+  "homepage": "https://github.com/anjieyang/autosde"
+}

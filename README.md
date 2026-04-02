@@ -6,25 +6,13 @@ AutoSDE is an always-on shell loop inspired by Karpathy's `autoresearch`: one pr
 
 ## Quick Start
 
-1. Install AutoSDE:
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anjieyang/autosde/main/install.sh | bash
-```
-
-2. Move into the repo you want AutoSDE to work on:
-
-```bash
+npm install -g autosde
 cd ~/my-project
+autosde
 ```
 
-3. Start the loop:
-
-```bash
-autosde --github owner/repo
-```
-
-If AutoSDE cannot auto-detect your test command, pass one explicitly:
+AutoSDE walks you through setup on first run. Or pass arguments directly for headless use:
 
 ```bash
 autosde --github owner/repo --verify "npm test"
@@ -32,6 +20,7 @@ autosde --github owner/repo --verify "npm test"
 
 ## Prerequisites
 
+- Node.js and npm (required by the Claude CLI).
 - `claude` CLI installed and logged in. AutoSDE links to Anthropic's setup guide if it is missing.
 - `gh` CLI installed and logged in with access to the target repository.
 - A git repository with a working test or CI command.

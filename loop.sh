@@ -2,7 +2,13 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_source="${BASH_SOURCE[0]}"
+while [ -L "$_source" ]; do
+  _dir="$(cd "$(dirname "$_source")" && pwd)"
+  _source="$(readlink "$_source")"
+  case "$_source" in /*) ;; *) _source="$_dir/$_source" ;; esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$_source")" && pwd)"
 AUTOSDE_HOME="${AUTOSDE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/autosde}"
 
 CLI_REPO_PATH=""
