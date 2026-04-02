@@ -905,7 +905,7 @@ build_prompt_file() {
     printf 'You are working inside the repository at %s.\n' "$REPO_PATH"
     printf 'Stay on branch %s.\n\n' "$branch"
     printf 'Follow the repository AGENT.md instructions below exactly.\n\n'
-    printf '----- BEGIN AGENT.md -----\n'
+    printf '%s\n' '----- BEGIN AGENT.md -----'
     cat "$TARGET_AGENT_FILE"
     printf '\n----- END AGENT.md -----\n\n'
     printf 'Current issue:\n'
