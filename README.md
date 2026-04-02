@@ -2,29 +2,30 @@
 
 Label an issue, go to sleep, wake up to a PR.
 
-AutoSDE is an always-on shell loop inspired by Karpathy's `autoresearch`: one prompt file defines agent behavior, one loop drives execution, CI is the ground truth, and Git is memory plus rollback.
+AutoSDE is an always-on loop inspired by Karpathy's `autoresearch`: one prompt file defines agent behavior, one loop drives execution, CI is the ground truth, and Git is memory plus rollback.
 
 ## Quick Start
 
 ```bash
-npm install -g @anjieyang/autosde
+pip install autosde
 cd ~/my-project
 autosde
 ```
 
-AutoSDE walks you through setup on first run. Or pass arguments directly for headless use:
+AutoSDE walks you through setup on first run — installing missing dependencies, detecting your GitHub remote, and picking a test command. Or pass arguments directly for headless use:
 
 ```bash
-autosde --github owner/repo --verify "npm test"
+autosde --github owner/repo --verify "pytest"
 ```
 
 ## Prerequisites
 
-- Node.js and npm (required by the Claude CLI).
-- `claude` CLI installed and logged in. AutoSDE links to Anthropic's setup guide if it is missing.
+- Python 3.10+.
+- `claude` CLI installed and logged in.
 - `gh` CLI installed and logged in with access to the target repository.
 - A git repository with a working test or CI command.
-- On macOS, install GNU coreutils so `gtimeout` is available for Claude timeouts.
+
+Missing `gh` or `claude`? AutoSDE offers to install them during interactive setup.
 
 ## How It Works
 
@@ -32,7 +33,7 @@ autosde --github owner/repo --verify "npm test"
 GitHub Issues (labeled "agent")
      |
      v
-autosde / loop.sh (picks task, creates branch)
+autosde (picks task, creates branch)
      |
      v
 Claude Code (reads AGENT.md, implements solution)
@@ -48,7 +49,7 @@ CI / test command (green/red)
 ## Configuration
 
 - `--repo PATH`: target repository path. Defaults to the current directory.
-- `--github OWNER/REPO`: GitHub repository name. Required unless `GITHUB_REPO` is already set.
+- `--github OWNER/REPO`: GitHub repository. Detected interactively if omitted.
 - `--verify "COMMAND"`: verification command. If omitted, AutoSDE auto-detects one.
 - `--sleep SECONDS`: idle polling interval. Defaults to `900`.
 - `--claude-bin PATH`: Claude CLI binary. Defaults to `claude`.
@@ -58,11 +59,7 @@ CI / test command (green/red)
 
 ## AGENT.md Customization
 
-On first run, AutoSDE checks the target repo for `AGENT.md`. If it is missing, AutoSDE writes a default template to `REPO_PATH/AGENT.md` and prints:
-
-```text
-Generated default AGENT.md at PATH, review and customize the scope section
-```
+On first run, AutoSDE checks the target repo for `AGENT.md`. If it is missing, AutoSDE writes a default template and asks for confirmation before continuing.
 
 Before leaving the loop unattended, review that file and tighten the `You CAN modify` scope line to match the real boundaries of your repo.
 

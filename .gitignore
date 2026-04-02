@@ -1,3 +1,4 @@
 results.log
 logs/*.log
 .DS_Store
+autosde.egg-info/

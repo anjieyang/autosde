@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autosde"
+version = "0.2.0"
+description = "Label an issue, go to sleep, wake up to a PR."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Anjie Yang"}]
+keywords = ["ai", "automation", "claude", "github", "agent", "codegen"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development",
+]
+
+[project.scripts]
+autosde = "autosde.cli:main"
+
+[tool.setuptools]
+packages = ["autosde"]
+
+[project.urls]
+Homepage = "https://github.com/anjieyang/autosde"
+Repository = "https://github.com/anjieyang/autosde"
+Issues = "https://github.com/anjieyang/autosde/issues"
